@@ -130,13 +130,11 @@ void draw_wrapper(simple_tiling_utils::job_wrapper_inputs wrapper_inputs, simple
 	{
 		// Tile state checks - try to do these as infrequently as possible
 		bool tileBlocked = false;
-		bool unblockedThisRow = false;
 		if (!unblocked)
 		{
 			tileBlocked = (tile_states[wrapper_inputs.data] == simple_tiling_utils::UPLOADING);
 			if (!tileBlocked)
 			{
-				unblockedThisRow = true;
 				unblocked = true;
 				tile_states[static_cast<uint32_t>(wrapper_inputs.data)] = simple_tiling_utils::PROCESSING;
 			}
