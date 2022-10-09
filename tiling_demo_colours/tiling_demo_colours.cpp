@@ -4,6 +4,9 @@
 #include "framework.h"
 #include "tiling_demo_colours.h"
 #include "..\SimpleTiling\SimpleTiling.h"
+#undef min
+#undef max
+#include "..\ThirdParty\tracy-0.8\Tracy.hpp"
 #include <chrono>
 
 #define MAX_LOADSTRING 100
@@ -47,92 +50,97 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     // Main message loop:
     while (GetMessage(&msg, nullptr, 0, 0))
     {
-        simple_tiling::submit_draw_work([](simple_tiling_utils::v_type pixels, simple_tiling_utils::color_batch* colors_out)
         {
+            ZoneNamed(drawZone, "Draw submission", true);
+            simple_tiling::submit_draw_work([](simple_tiling_utils::v_type pixels, simple_tiling_utils::color_batch* colors_out)
+                {
 #define TEST_ANIMATION
 #ifdef TEST_RGB
 #if (NUM_VECTOR_LANES == 4)
-            colors_out->colors8bpc[0] = 0xff0000ff;
-            colors_out->colors8bpc[1] = 0xff00ff00;
-            colors_out->colors8bpc[2] = 0xffff0000;
-            colors_out->colors8bpc[3] = 0xffffffff;
+                    colors_out->colors8bpc[0] = 0xff0000ff;
+                    colors_out->colors8bpc[1] = 0xff00ff00;
+                    colors_out->colors8bpc[2] = 0xffff0000;
+                    colors_out->colors8bpc[3] = 0xffffffff;
 #elif (NUM_VECTOR_LANES == 8)
-            colors_out->colors8bpc[0] = 0xff0000ff;
-            colors_out->colors8bpc[1] = 0xff00ff00;
-            colors_out->colors8bpc[2] = 0xffff0000;
-            colors_out->colors8bpc[3] = 0xffffffff;
-            colors_out->colors8bpc[4] = 0xff0000ff;
-            colors_out->colors8bpc[5] = 0xf000ff00;
-            colors_out->colors8bpc[6] = 0xffff0000;
-            colors_out->colors8bpc[7] = 0xffffffff;
+                    colors_out->colors8bpc[0] = 0xff0000ff;
+                    colors_out->colors8bpc[1] = 0xff00ff00;
+                    colors_out->colors8bpc[2] = 0xffff0000;
+                    colors_out->colors8bpc[3] = 0xffffffff;
+                    colors_out->colors8bpc[4] = 0xff0000ff;
+                    colors_out->colors8bpc[5] = 0xf000ff00;
+                    colors_out->colors8bpc[6] = 0xffff0000;
+                    colors_out->colors8bpc[7] = 0xffffffff;
 #endif
 #elif defined (TEST_PIXEL_XOR)
-            auto wvec = v_op(set1_ps)(window_width);
-            auto yvec = v_op(floor_ps)(v_op(div_ps)(pixels, wvec));
-            auto xvec = v_op(sub_ps)(pixels, v_op(mul_ps)(yvec, wvec));
-            auto rgb_vec = v_op(xor_ps)(xvec, yvec);
-                          //v_op(div_ps)(xvec, wvec);
+                    auto wvec = v_op(set1_ps)(window_width);
+                    auto yvec = v_op(floor_ps)(v_op(div_ps)(pixels, wvec));
+                    auto xvec = v_op(sub_ps)(pixels, v_op(mul_ps)(yvec, wvec));
+                    auto rgb_vec = v_op(xor_ps)(xvec, yvec);
+                    //v_op(div_ps)(xvec, wvec);
 
-            // Not super accurate, but very fast
-            memcpy(colors_out, &rgb_vec, sizeof(simple_tiling_utils::v_type));
+      // Not super accurate, but very fast
+                    memcpy(colors_out, &rgb_vec, sizeof(simple_tiling_utils::v_type));
 
-            // Memcpy doesn't really preserve pixel colors - should find a way to run this snippet
-            // using AVX2 intrinsics for algorithms that need more precise control
-            //for (uint32_t i = 0; i < NUM_VECTOR_LANES; i++)
-            //{
-            //    colors_out->colors8bpc[i] = v_access(rgb_vec)[i] * 255.5f;
-            //}
+                    // Memcpy doesn't really preserve pixel colors - should find a way to run this snippet
+                    // using AVX2 intrinsics for algorithms that need more precise control
+                    //for (uint32_t i = 0; i < NUM_VECTOR_LANES; i++)
+                    //{
+                    //    colors_out->colors8bpc[i] = v_access(rgb_vec)[i] * 255.5f;
+                    //}
 
-            // slo but more predictable than straight memcpy, useful for debugging
-            //rgb_vec = v_op(mul_ps)(rgb_vec, v_op(set1_ps)(256.0f));
-            //for (uint32_t i = 0; i < NUM_VECTOR_LANES; i++)
-            //{
-            //    colors_out->colors8bpc[i] = v_access(rgb_vec)[i];
-            //}
+                    // slo but more predictable than straight memcpy, useful for debugging
+                    //rgb_vec = v_op(mul_ps)(rgb_vec, v_op(set1_ps)(256.0f));
+                    //for (uint32_t i = 0; i < NUM_VECTOR_LANES; i++)
+                    //{
+                    //    colors_out->colors8bpc[i] = v_access(rgb_vec)[i];
+                    //}
 
 #elif defined (TEST_ANIMATION)
-            // Load time
-            auto clock = std::chrono::steady_clock::now();
-            double t = static_cast<uint32_t>(clock.time_since_epoch().count());
-            t *= 1.0e-9;
-            auto tvec = v_op(set1_ps)(t);
+                    // Load time
+                    auto clock = std::chrono::steady_clock::now();
+                    double t = static_cast<uint32_t>(clock.time_since_epoch().count());
+                    t *= 1.0e-9;
+                    auto tvec = v_op(set1_ps)(t);
 
-            // Load other useful constants
-            auto wvec = v_op(set1_ps)(window_width);
-            auto hvec = v_op(set1_ps)(window_height);
+                    // Load other useful constants
+                    auto wvec = v_op(set1_ps)(window_width);
+                    auto hvec = v_op(set1_ps)(window_height);
 
-            // Compute pixel coordinates
-            auto yvec = v_op(floor_ps)(v_op(div_ps)(pixels, wvec));
-            auto xvec = v_op(sub_ps)(pixels, v_op(mul_ps)(yvec, wvec));
-            auto u_vec = v_op(div_ps)(xvec, wvec);
-            auto v_vec = v_op(div_ps)(yvec, hvec);
+                    // Compute pixel coordinates
+                    auto yvec = v_op(floor_ps)(v_op(div_ps)(pixels, wvec));
+                    auto xvec = v_op(sub_ps)(pixels, v_op(mul_ps)(yvec, wvec));
+                    auto u_vec = v_op(div_ps)(xvec, wvec);
+                    auto v_vec = v_op(div_ps)(yvec, hvec);
 
-            // Colors :)
-            // vec3 col = 0.5 + 0.5 * cos(iTime + uv.xyx + vec3(0, 2, 4));
-            auto point5_vec = v_op(set1_ps)(0.5f);
-            auto red_vec = v_op(mul_ps)(point5_vec, v_op(sin_ps)(v_op(add_ps)(tvec, u_vec)));
-            red_vec = v_op(add_ps)(red_vec, point5_vec);
+                    // Colors :)
+                    // vec3 col = 0.5 + 0.5 * cos(iTime + uv.xyx + vec3(0, 2, 4));
+                    auto point5_vec = v_op(set1_ps)(0.5f);
+                    auto red_vec = v_op(mul_ps)(point5_vec, v_op(sin_ps)(v_op(add_ps)(tvec, u_vec)));
+                    red_vec = v_op(add_ps)(red_vec, point5_vec);
 
-            auto blue_vec = v_op(mul_ps)(point5_vec, v_op(cos_ps)(v_op(add_ps)(tvec, v_vec)));
-            blue_vec = v_op(add_ps)(blue_vec, point5_vec);
+                    auto blue_vec = v_op(mul_ps)(point5_vec, v_op(cos_ps)(v_op(add_ps)(tvec, v_vec)));
+                    blue_vec = v_op(add_ps)(blue_vec, point5_vec);
 
-            // Export
-            for (uint32_t i = 0; i < NUM_VECTOR_LANES; i++)
-            {
-                colors_out->colors8bpc[i] = uint32_t(v_access(red_vec)[i] * 255.5f) | (uint32_t(v_access(blue_vec)[i] * 255.5f) << 8) |
-                                                    (255 << 16) | (255 << 24);
-            }
+                    // Export
+                    for (uint32_t i = 0; i < NUM_VECTOR_LANES; i++)
+                    {
+                        colors_out->colors8bpc[i] = uint32_t(v_access(red_vec)[i] * 255.5f) | (uint32_t(v_access(blue_vec)[i] * 255.5f) << 8) |
+                            (255 << 16) | (255 << 24);
+                    }
 #endif
-        });
-
-        simple_tiling::swap_tile_buffers();
-
+                });
+        }
+        {
+            ZoneNamed(swapZone, "Tile swaps", true);
+            simple_tiling::swap_tile_buffers();
+        }
         if (!TranslateAccelerator(msg.hwnd, hAccelTable, &msg))
         {
             TranslateMessage(&msg);
             DispatchMessage(&msg);
             InvalidateRect(msg.hwnd, NULL, false);
         }
+        FrameMark;
     }
     simple_tiling::shutdown();
     return (int) msg.wParam;
@@ -230,10 +238,14 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         break;
     case WM_PAINT:
         {
-            PAINTSTRUCT ps;
-            HDC hdc = BeginPaint(hWnd, &ps);
-            simple_tiling::win_paint(hdc);
-            EndPaint(hWnd, &ps);
+            ZoneScoped;
+            if (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count() % 30 == 0) // 30 millisecond vsync
+            {
+                PAINTSTRUCT ps;
+                HDC hdc = BeginPaint(hWnd, &ps);
+                simple_tiling::win_paint(hdc);
+                EndPaint(hWnd, &ps);
+            }
         }
         break;
     case WM_DESTROY:

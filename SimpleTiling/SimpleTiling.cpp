@@ -3,6 +3,7 @@
 
 #include "SimpleTiling.h"
 #include <thread>
+#include <vector>
 #include <intrin.h>
 #include <cassert>
 
@@ -85,11 +86,19 @@ simple_tiling_utils::job_q<simple_tiling_utils::DRAW_WORK> tile_draw_jobs[simple
 simple_tiling_utils::job_q<simple_tiling_utils::UPDATE_WORK> tile_update_jobs[simple_tiling_utils::max_tiles];
 simple_tiling_utils::color_batch* tileBuffers[simple_tiling_utils::max_tiles] = {};
 
+struct color_staging
+{
+	uint32_t pixel;
+	simple_tiling_utils::color_batch colors;
+};
+std::vector<color_staging> stagingTileBuffers[simple_tiling_utils::max_tiles]; // For temporary writes while [tileBuffers] are blocked from the main thread
+
 uint32_t tileMinX[simple_tiling_utils::max_tiles] = {};
 uint32_t tileMaxX[simple_tiling_utils::max_tiles] = {};
 uint32_t tileMinY[simple_tiling_utils::max_tiles] = {};
 uint32_t tileMaxY[simple_tiling_utils::max_tiles] = {};
 std::atomic_bool tile_running[simple_tiling_utils::max_tiles] = {};
+std::atomic_bool tile_shutdown_success[simple_tiling_utils::max_tiles] = {};
 
 std::atomic<simple_tiling_utils::TILE_STATES> tile_states[simple_tiling_utils::max_tiles] = {};
 std::thread tiles[simple_tiling_utils::max_tiles];
@@ -119,6 +128,21 @@ void draw_wrapper(simple_tiling_utils::job_wrapper_inputs wrapper_inputs, simple
 
 	for (uint32_t pixel_row = minY; pixel_row < maxY; pixel_row++)
 	{
+		// Tile state checks - try to do these as infrequently as possible
+		bool tileBlocked = false;
+		bool unblockedThisRow = false;
+		if (!unblocked)
+		{
+			tileBlocked = (tile_states[wrapper_inputs.data] == simple_tiling_utils::UPLOADING);
+			if (!tileBlocked)
+			{
+				unblockedThisRow = true;
+				unblocked = true;
+				tile_states[static_cast<uint32_t>(wrapper_inputs.data)] = simple_tiling_utils::PROCESSING;
+			}
+		}
+
+		//  Core pixel processing
 		for (uint32_t pixel_batch = minX; pixel_batch < maxX; pixel_batch += NUM_VECTOR_LANES) // For each vectorized pixel batch
 		{
 			// Issue work
@@ -136,33 +160,45 @@ void draw_wrapper(simple_tiling_utils::job_wrapper_inputs wrapper_inputs, simple
 #error("unsupported vector width");
 #endif
 
-			// Wait until any pending uploads finish
-			// Should probably use a condi-var here
-			while (tile_states[wrapper_inputs.data] == simple_tiling_utils::UPLOADING)
-			{
-				/* Spin */
-				unblocked = true;
-			}
-
 			// Not uploading, safe to copy out tile color ^_^
 			const uint32_t tile_width = maxX - minX;
 			const uint32_t tile_height = maxY - minY;
 			const uint32_t tile_px_x = pixel_batch - minX;
 			const uint32_t tile_px_y = pixel_row - minY;
 			const uint32_t tile_px = (tile_px_y * tile_width) + tile_px_x;
-			tileBuffers[static_cast<uint32_t>(wrapper_inputs.data)][tile_px / NUM_VECTOR_LANES] = batch_colors;
-			//memset(tileBuffers[static_cast<uint32_t>(wrapper_inputs.data)], 0xff, tile_width * tile_height * sizeof(simple_tiling_utils::v_type));
-
-			// We've left the uploading state, and this tile isn't masked, so swap to the working state now
-			if (unblocked)
+			if (tileBlocked) // Keep working, staging colors until the tile buffer becomes available again
 			{
-				tile_states[static_cast<uint32_t>(wrapper_inputs.data)] = simple_tiling_utils::PROCESSING;
+				stagingTileBuffers[wrapper_inputs.data].push_back({tile_px, batch_colors});
 			}
+			else
+			{
+				tileBuffers[static_cast<uint32_t>(wrapper_inputs.data)][tile_px / NUM_VECTOR_LANES] = batch_colors;
+			}
+			//memset(tileBuffers[static_cast<uint32_t>(wrapper_inputs.data)], 0xff, tile_width * tile_height * sizeof(simple_tiling_utils::v_type));
 		}
 	}
 
-	// Signal the main thread that this tile has finished working, so it can be safely copied to the back-buffer
-	tile_states[static_cast<uint32_t>(wrapper_inputs.data)] = simple_tiling_utils::UPLOADING;
+	// Spin here if the tile-buffer is still blocked
+	while (tile_states[wrapper_inputs.data] == simple_tiling_utils::UPLOADING && !tile_running[wrapper_inputs.data])
+	{
+		/* Spin */
+	}
+
+	// Safe to write to the tile buffer - blast out staging colors
+	// No reason to execute these if tiling has been stopped anyway
+	if (tile_running[wrapper_inputs.data])
+	{
+		size_t num_colors = stagingTileBuffers[wrapper_inputs.data].size();
+		for (size_t i = 0; i < num_colors; i++)
+		{
+			auto color = stagingTileBuffers[wrapper_inputs.data][i];
+			tileBuffers[static_cast<uint32_t>(wrapper_inputs.data)][color.pixel / NUM_VECTOR_LANES] = color.colors;
+		}
+		stagingTileBuffers[wrapper_inputs.data].clear();
+
+		// Signal the main thread that this tile has finished working, so it can be safely copied to the back-buffer
+		tile_states[static_cast<uint32_t>(wrapper_inputs.data)] = simple_tiling_utils::UPLOADING;
+	}
 }
 
 void simple_tiling::submit_draw_work(simple_tiling_utils::draw_job work, uint64_t tile_mask)
@@ -200,6 +236,7 @@ void thread_main(uint32_t tile_ndx)
 			tile_update_jobs[tile_ndx].consume_job();
 		}
 	}
+	tile_shutdown_success[tile_ndx] = true;
 }
 
 static constexpr uint64_t mem_budget = 100000000;
@@ -284,8 +321,10 @@ void simple_tiling::setup(uint32_t num_tiles, uint32_t window_width, uint32_t wi
 	{
 		tileBuffers[i] = alloc_array<simple_tiling_utils::color_batch>(tile_area_vectors);
 		tile_running[i] = true;
+		tile_shutdown_success[i] = false;
 		tile_states[i] = simple_tiling_utils::IDLE;
 		tiles[i] = std::thread(thread_main, i);
+		stagingTileBuffers[i].reserve(tile_area_vectors); // Free allocation, ew; should use custom vector that allocates with [alloc_array]
 	}
 
 	// Allocate the canvas back-buffer
@@ -316,6 +355,10 @@ void simple_tiling::shutdown()
 	for (uint32_t i = 0; i < numTiles; i++)
 	{
 		tile_running[i] = false;
+		while (!tile_shutdown_success[i])
+		{
+			/* Spin */
+		}
 	}
 
 	// Separate loops so that calls to [join] are delayed enough for tile states to be well-defined
