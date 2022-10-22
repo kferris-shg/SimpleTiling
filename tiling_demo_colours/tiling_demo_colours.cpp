@@ -24,6 +24,8 @@ INT_PTR CALLBACK    About(HWND, UINT, WPARAM, LPARAM);
 
 static constexpr uint32_t window_width = 1920, window_height = 1080;
 
+static float lastTime = 0.0;
+
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
                      _In_opt_ HINSTANCE hPrevInstance,
                      _In_ LPWSTR    lpCmdLine,
@@ -50,11 +52,17 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     // Main message loop:
     while (GetMessage(&msg, nullptr, 0, 0))
     {
+        const auto clock = std::chrono::steady_clock::now();
+        double t = static_cast<double>(clock.time_since_epoch().count());
+        t *= 1.0e-9;
+        lastTime = static_cast<float>(t);
+
         {
-            ZoneNamed(drawZone, "Draw submission", true);
+            ZoneNamed(drawZone, "Draw submission");
             simple_tiling::submit_draw_work([](simple_tiling_utils::v_type pixels, simple_tiling_utils::color_batch* colors_out)
                 {
 #define TEST_ANIMATION
+//#define TEST_RGB
 #ifdef TEST_RGB
 #if (NUM_VECTOR_LANES == 4)
                     colors_out->colors8bpc[0] = 0xff0000ff;
@@ -97,25 +105,22 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 
 #elif defined (TEST_ANIMATION)
                     // Load time
-                    auto clock = std::chrono::steady_clock::now();
-                    double t = static_cast<uint32_t>(clock.time_since_epoch().count());
-                    t *= 1.0e-9;
-                    auto tvec = v_op(set1_ps)(t);
+                    const auto tvec = v_op(set1_ps)(lastTime);
 
                     // Load other useful constants
-                    auto wvec = v_op(set1_ps)(window_width);
-                    auto hvec = v_op(set1_ps)(window_height);
+                    const auto wvec = v_op(set1_ps)(window_width);
+                    const auto hvec = v_op(set1_ps)(window_height);
 
                     // Compute pixel coordinates
-                    auto yvec = v_op(floor_ps)(v_op(div_ps)(pixels, wvec));
-                    auto xvec = v_op(sub_ps)(pixels, v_op(mul_ps)(yvec, wvec));
-                    auto u_vec = v_op(div_ps)(xvec, wvec);
-                    auto v_vec = v_op(div_ps)(yvec, hvec);
+                    const auto yvec = v_op(floor_ps)(v_op(div_ps)(pixels, wvec));
+                    const auto xvec = v_op(sub_ps)(pixels, v_op(mul_ps)(yvec, wvec));
+                    const auto u_vec = v_op(div_ps)(xvec, wvec);
+                    const auto v_vec = v_op(div_ps)(yvec, hvec);
 
                     // Colors :)
-                    // vec3 col = 0.5 + 0.5 * cos(iTime + uv.xyx + vec3(0, 2, 4));
-                    auto point5_vec = v_op(set1_ps)(0.5f);
-                    auto red_vec = v_op(mul_ps)(point5_vec, v_op(sin_ps)(v_op(add_ps)(tvec, u_vec)));
+                    // vec3 col = 0.5 + 0.5 * cos(iTime + uv.xy);
+                    const auto point5_vec = v_op(set1_ps)(0.5f);
+                    auto red_vec = v_op(mul_ps)(point5_vec, v_op(cos_ps)(v_op(add_ps)(tvec, u_vec)));
                     red_vec = v_op(add_ps)(red_vec, point5_vec);
 
                     auto blue_vec = v_op(mul_ps)(point5_vec, v_op(cos_ps)(v_op(add_ps)(tvec, v_vec)));
