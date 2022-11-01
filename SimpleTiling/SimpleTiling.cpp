@@ -119,15 +119,35 @@ fast_vec<uint32_t> blockedTileStrips[simple_tiling_utils::max_tiles] = {}; // En
 																		   // each staged color we can store a buffer of blocked strips instead - this should improve
 																		   // cache performance for staging reads/writes
 
-uint32_t tileMinX[simple_tiling_utils::max_tiles] = {};
-uint32_t tileMaxX[simple_tiling_utils::max_tiles] = {};
-uint32_t tileMinY[simple_tiling_utils::max_tiles] = {};
-uint32_t tileMaxY[simple_tiling_utils::max_tiles] = {};
-std::atomic_bool tile_running[simple_tiling_utils::max_tiles] = {};
-std::atomic_bool tile_shutdown_success[simple_tiling_utils::max_tiles] = {};
+// Padded wrapper used with variables intended for specific threads, to avoid false sharing
+struct XThreadWrapper
+{
+	struct data
+	{
+		uint32_t tileMinX = 0;
+		uint32_t tileMaxX = 0;
+		uint32_t tileMinY = 0;
+		uint32_t tileMaxY = 0;
+		std::atomic_bool tile_running = {};
+		std::atomic_bool tile_shutdown_success = {};
+		std::atomic<simple_tiling_utils::TILE_STATES> tile_state = {};
+		std::thread tile;
+	};
+	data threadData = {};
 
-std::atomic<simple_tiling_utils::TILE_STATES> tile_states[simple_tiling_utils::max_tiles] = {};
-std::thread tiles[simple_tiling_utils::max_tiles];
+	static constexpr uint8_t padlen = sizeof(data) > 64 ? 0 : (64 - sizeof(data));
+	uint8_t padding[padlen] = {};
+
+	XThreadWrapper(data inputs)
+	{
+		memcpy(&threadData, &inputs, sizeof(data));
+		memset(&padding, 0x0, sizeof(padding));
+	}
+	XThreadWrapper() {}
+};
+
+XThreadWrapper tile_data[simple_tiling_utils::max_tiles] = {};
+
 uint32_t numTiles = 0;
 uint32_t numTilesX = 0;
 uint32_t numTilesY = 0;
@@ -146,10 +166,11 @@ void simple_tiling::submit_update_work_internal(simple_tiling_utils::update_job_
 
 void draw_wrapper(simple_tiling_utils::job_wrapper_inputs wrapper_inputs, simple_tiling_utils::draw_job wrapped_job)
 {
-	const uint32_t minX = tileMinX[wrapper_inputs.data];
-	const uint32_t maxX = tileMaxX[wrapper_inputs.data];
-	const uint32_t minY = tileMinY[wrapper_inputs.data];
-	const uint32_t maxY = tileMaxY[wrapper_inputs.data];
+	XThreadWrapper::data& tileInfo = tile_data[wrapper_inputs.data].threadData;
+	const uint32_t minX = tileInfo.tileMinX;
+	const uint32_t maxX = tileInfo.tileMaxX;
+	const uint32_t minY = tileInfo.tileMinY;
+	const uint32_t maxY = tileInfo.tileMaxY;
 	bool unblocked = false;
 
 	for (uint32_t pixel_row = minY; pixel_row < maxY; pixel_row++)
@@ -158,11 +179,11 @@ void draw_wrapper(simple_tiling_utils::job_wrapper_inputs wrapper_inputs, simple
 		bool tileBlocked = false;
 		if (!unblocked)
 		{
-			tileBlocked = (tile_states[wrapper_inputs.data] == simple_tiling_utils::UPLOADING);
+			tileBlocked = (tileInfo.tile_state == simple_tiling_utils::UPLOADING);
 			if (!tileBlocked)
 			{
 				unblocked = true;
-				tile_states[static_cast<uint32_t>(wrapper_inputs.data)] = simple_tiling_utils::PROCESSING;
+				tileInfo.tile_state = simple_tiling_utils::PROCESSING;
 			}
 		}
 
@@ -198,23 +219,23 @@ void draw_wrapper(simple_tiling_utils::job_wrapper_inputs wrapper_inputs, simple
 
 			// Keep working through blocks, staging colors until the main tile buffer becomes available again
 			simple_tiling_utils::color_batch* dstColors = tileBlocked ? stagingTileBuffers[wrapper_inputs.data] : tileBuffers[wrapper_inputs.data];
-			dstColors[tile_px / NUM_VECTOR_LANES] = batch_colors;
+			memcpy(dstColors + (tile_px / NUM_VECTOR_LANES), &batch_colors, sizeof(simple_tiling_utils::color_batch));
 			//memset(tileBuffers[static_cast<uint32_t>(wrapper_inputs.data)], 0xff, tile_width * tile_height * sizeof(simple_tiling_utils::v_type));
 		}
 	}
 
 	// Spin here if the tile-buffer is still blocked
-	if (tile_running[wrapper_inputs.data])
+	if (tileInfo.tile_running)
 	{
-		if (tile_states[wrapper_inputs.data] == simple_tiling_utils::UPLOADING)
+		if (tileInfo.tile_state == simple_tiling_utils::UPLOADING)
 		{
-			tile_states[wrapper_inputs.data].wait(simple_tiling_utils::UPLOADING);
+			tileInfo.tile_state.wait(simple_tiling_utils::UPLOADING);
 		}
 	}
 
 	// Safe to write to the tile buffer - blast out staging colors
 	// No reason to execute these if tiling has been stopped anyway
-	if (tile_running[wrapper_inputs.data])
+	if (tileInfo.tile_running)
 	{
 		const uint32_t tile_width_vectors = (maxX - minX) / NUM_VECTOR_LANES;
 		const size_t num_strips = blockedTileStrips[wrapper_inputs.data].size();
@@ -227,7 +248,7 @@ void draw_wrapper(simple_tiling_utils::job_wrapper_inputs wrapper_inputs, simple
 		blockedTileStrips[wrapper_inputs.data].clear();
 
 		// Signal the main thread that this tile has finished working, so it can be safely copied to the back-buffer
-		tile_states[static_cast<uint32_t>(wrapper_inputs.data)] = simple_tiling_utils::UPLOADING;
+		tileInfo.tile_state = simple_tiling_utils::UPLOADING;
 	}
 }
 
@@ -241,10 +262,10 @@ void simple_tiling::submit_draw_work(simple_tiling_utils::draw_job work, uint64_
 			args.data = i;
 			submit_draw_work_internal(draw_wrapper, args, work, i);
 		}
-		else if (tile_states[i] != simple_tiling_utils::UPLOADING)
+		else if (tile_data[i].threadData.tile_state != simple_tiling_utils::UPLOADING) // Not sure how useful this is + feels problematic for performance ^_^'
 		{
 			// Not uploading or processing, so flag this tile as IDLE
-			tile_states[i] = simple_tiling_utils::IDLE;
+			tile_data[i].threadData.tile_state = simple_tiling_utils::IDLE;
 		}
 	}
 }
@@ -252,7 +273,8 @@ void simple_tiling::submit_draw_work(simple_tiling_utils::draw_job work, uint64_
 void thread_main(uint32_t tile_ndx)
 {
 	// Should use condi-vars here to avoid spamming all threads all the time
-	while (tile_running[tile_ndx])
+	XThreadWrapper::data& tile_info = tile_data[tile_ndx].threadData;
+	while (tile_info.tile_running)
 	{
 		// Consume draw jobs, then consume update jobs
 		// I don't *think* that should cause any issues
@@ -266,7 +288,7 @@ void thread_main(uint32_t tile_ndx)
 			tile_update_jobs[tile_ndx].consume_job();
 		}
 	}
-	tile_shutdown_success[tile_ndx] = true;
+	tile_info.tile_shutdown_success = true;
 }
 
 static constexpr uint64_t mem_budget = 100000000;
@@ -324,16 +346,19 @@ void simple_tiling::setup(uint32_t num_tiles, uint32_t window_width, uint32_t wi
 	const uint32_t tile_width_px = canvas_width / numTilesX;
 	const uint32_t tile_height_px = canvas_height / numTilesY;
 	uint32_t tileCtr = 0;
+	XThreadWrapper::data* tileInfo = &tile_data[tileCtr].threadData;
 	for (uint32_t x = 0; x < numTilesX; x++)
 	{
 		for (uint32_t y = 0; y < numTilesY; y++)
 		{
-			tileMinX[tileCtr] = tile_width_px * x;
-			tileMaxX[tileCtr] = tileMinX[tileCtr] + tile_width_px;
+			tileInfo->tileMinX = tile_width_px * x;
+			tileInfo->tileMaxX = tileInfo->tileMinX + tile_width_px;
 
-			tileMinY[tileCtr] = tile_height_px * y;
-			tileMaxY[tileCtr] = tileMinY[tileCtr] + tile_height_px;
+			tileInfo->tileMinY = tile_height_px * y;
+			tileInfo->tileMaxY = tileInfo->tileMinY + tile_height_px;
+
 			tileCtr++;
+			tileInfo = &tile_data[tileCtr].threadData;
 		}
 	}
 
@@ -350,10 +375,12 @@ void simple_tiling::setup(uint32_t num_tiles, uint32_t window_width, uint32_t wi
 	for (uint32_t i = 0; i < num_tiles; i++)
 	{
 		tileBuffers[i] = alloc_array<simple_tiling_utils::color_batch>(tile_area_vectors);
-		tile_running[i] = true;
-		tile_shutdown_success[i] = false;
-		tile_states[i] = simple_tiling_utils::IDLE;
-		tiles[i] = std::thread(thread_main, i);
+
+		tile_data[i].threadData.tile_running = true;
+		tile_data[i].threadData.tile_shutdown_success = false;
+		tile_data[i].threadData.tile_state = simple_tiling_utils::IDLE;
+		tile_data[i].threadData.tile = std::thread(thread_main, i);
+
 		stagingTileBuffers[i] = alloc_array<simple_tiling_utils::color_batch>(tile_area_vectors); // Free allocation, ew; should use custom vector that allocates with [alloc_array]
 		blockedTileStrips[i].init(alloc_array<uint32_t>(tile_area_vectors));
 	}
@@ -385,19 +412,21 @@ void simple_tiling::shutdown()
 	// Terminate tile threads
 	for (uint32_t i = 0; i < numTiles; i++)
 	{
-		tile_running[i] = false;
-		while (!tile_shutdown_success[i])
+		XThreadWrapper::data& tileInfo = tile_data[i].threadData;
+		tileInfo.tile_running = false;
+		while (!tileInfo.tile_shutdown_success)
 		{
 			// Repeatedly notify blocked threads until they unblock
-			tile_states[i].store(simple_tiling_utils::IDLE);
-			tile_states[i].notify_one();
+			tileInfo.tile_state.store(simple_tiling_utils::IDLE);
+			tileInfo.tile_state.notify_one();
 		}
 	}
 
 	// Separate loops so that calls to [join] are delayed enough for tile states to be well-defined
 	for (uint32_t i = 0; i < numTiles; i++)
 	{
-		tiles[i].join();
+		XThreadWrapper::data& tileInfo = tile_data[i].threadData;
+		tileInfo.tile.join();
 	}
 
 	// ... other shutdown things ... //
@@ -410,12 +439,13 @@ void simple_tiling::swap_tile_buffers()
 	for (uint32_t i = 0; i < numTiles; i++)
 	{
 		//memset(back_buffer + canvas_width * tileMinY[i], 0xff, canvas_width * sizeof(uint32_t));
-		if (tile_states[i] == simple_tiling_utils::UPLOADING)
+		XThreadWrapper::data& tileInfo = tile_data[i].threadData;
+		if (tileInfo.tile_state == simple_tiling_utils::UPLOADING)
 		{
-			const uint32_t minY = tileMinY[i];
-			const uint32_t minX = tileMinX[i];
-			const uint32_t maxY = tileMaxY[i];
-			const uint32_t maxX = tileMaxX[i];
+			const uint32_t minY = tileInfo.tileMinY;
+			const uint32_t minX = tileInfo.tileMinX;
+			const uint32_t maxY = tileInfo.tileMaxY;
+			const uint32_t maxX = tileInfo.tileMaxX;
 			const uint32_t dest_w = (maxX - minX);
 			const uint32_t src_w = (maxX - minX) / NUM_VECTOR_LANES;
 
@@ -434,8 +464,8 @@ void simple_tiling::swap_tile_buffers()
 			// If we don't want to draw immediately, client code can supply a mask to [submit_work(...)] to skip it in the next frame,
 			// which will cause its state to swap over from [PROCESSING] to [IDLE] (the IDLE state doesn't affect anything itself, but it can be useful
 			// for debugging thread occupancy or verifying if threads have been separated from rendering before taking on update work)
-			tile_states[i] = simple_tiling_utils::PROCESSING;
-			tile_states[i].notify_one();
+			tileInfo.tile_state = simple_tiling_utils::PROCESSING;
+			tileInfo.tile_state.notify_one();
 		}
 	}
 }
