@@ -47,7 +47,7 @@ namespace simple_tiling_utils
 
 	// Wrapper function definitions, allowing us to pass arbitrary update/draw items through a shared interface
 	using draw_job = void(*)(v_type, color_batch*);
-	using update_job = void(*)(void*);
+	using update_job = void(*)(uint32_t); // Update jobs need access to worker indices, but nothing otherwise (the actual logic is treated like an arbitrary black-box)
 	using draw_job_wrapper = void(*)(job_wrapper_inputs, draw_job);
 	using update_job_wrapper = void(*)(job_wrapper_inputs, update_job);
 
@@ -77,6 +77,9 @@ class simple_tiling
 		// Tile mask assumes users never request more than 64 threads/tiles
 		// Draw and update work should be submitted from the main loop; whether before or after [swap_tile_buffers] is up to the user
 		static void submit_draw_work(simple_tiling_utils::draw_job work, uint64_t tile_mask = 0xffffffffffffffff);
+
+		// Update work takes a tile index, but nothing else - all other job inputs/outputs are expected to come from client statics/globals/captures
+		static void submit_update_work(simple_tiling_utils::update_job work, uint64_t tile_mask = 0xffffffffffffffff);
 
 		// Setup/shutdown
 		static void setup(uint32_t num_tiles, uint32_t window_width, uint32_t window_height);

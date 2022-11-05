@@ -26,6 +26,17 @@ static constexpr uint32_t window_width = 1920, window_height = 1080;
 
 static float lastTime = 0.0;
 
+#define NUM_TILE_THREADS 8
+
+static float update_job_demotext[NUM_VECTOR_LANES * NUM_TILE_THREADS] = { 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 0.0f,
+                                                                          1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 0.0f,
+                                                                          1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 0.0f,
+                                                                          1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 0.0f,
+                                                                          1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 0.0f,
+                                                                          1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 0.0f,
+                                                                          1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 0.0f,
+                                                                          1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 0.0f, };
+
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
                      _In_opt_ HINSTANCE hPrevInstance,
                      _In_ LPWSTR    lpCmdLine,
@@ -48,6 +59,13 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     HACCEL hAccelTable = LoadAccelerators(hInstance, MAKEINTRESOURCE(IDC_TILINGDEMOCOLOURS));
 
     MSG msg;
+
+    simple_tiling::submit_update_work([](uint32_t tile_ndx)
+    {
+        const auto nums = v_op(load_ps)(&update_job_demotext[tile_ndx * NUM_VECTOR_LANES]);
+        const auto mathedNums = v_op(mul_ps)(nums, v_op(set1_ps)(2.0f));
+        memcpy(&update_job_demotext[tile_ndx * NUM_VECTOR_LANES], &mathedNums, sizeof(simple_tiling_utils::v_type));
+    });
 
     // Main message loop:
     while (GetMessage(&msg, nullptr, 0, 0))
@@ -203,7 +221,7 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 
    // Required to be initialized early, since [ShowWindow] will invoke WM_PAINT -> ::win_paint, which depeends on
    // a valid BITMAPINFO being defined for copy-outs
-   simple_tiling::setup(8, window_width, window_height);
+   simple_tiling::setup(NUM_TILE_THREADS, window_width, window_height);
 
    ShowWindow(hWnd, nCmdShow);
    UpdateWindow(hWnd);

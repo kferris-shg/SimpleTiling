@@ -252,6 +252,17 @@ void draw_wrapper(simple_tiling_utils::job_wrapper_inputs wrapper_inputs, simple
 	}
 }
 
+void update_wrapper(simple_tiling_utils::job_wrapper_inputs wrapper_inputs, simple_tiling_utils::update_job wrapped_job)
+{
+	XThreadWrapper::data& tileInfo = tile_data[wrapper_inputs.data].threadData;
+	if (tileInfo.tile_running) // Avoid starting new jobs on terminated tiles
+	{
+		tileInfo.tile_state = simple_tiling_utils::PROCESSING; // No loops or swapchains - totes safe to enter PROCESSING on job start and return to IDLE on job resolve ( / wrapper return)
+		wrapped_job(wrapper_inputs.data); // Updates are expected to take their tile index, but nothing else/
+		tileInfo.tile_state = simple_tiling_utils::IDLE; // No loops or swapchains, so tiles go straight back to IDLE after completing
+	}
+}
+
 void simple_tiling::submit_draw_work(simple_tiling_utils::draw_job work, uint64_t tile_mask)
 {
 	for (uint32_t i = 0; i < numTiles; i++) // For each tile
@@ -265,6 +276,23 @@ void simple_tiling::submit_draw_work(simple_tiling_utils::draw_job work, uint64_
 		else if (tile_data[i].threadData.tile_state != simple_tiling_utils::UPLOADING) // Not sure how useful this is + feels problematic for performance ^_^'
 		{
 			// Not uploading or processing, so flag this tile as IDLE
+			tile_data[i].threadData.tile_state = simple_tiling_utils::IDLE;
+		}
+	}
+}
+
+void simple_tiling::submit_update_work(simple_tiling_utils::update_job work, uint64_t tile_mask)
+{
+	for (uint32_t i = 0; i < numTiles; i++) // For each tile
+	{
+		if (tile_mask & (0x1ull << i)) // Skip processing masked tiles
+		{
+			simple_tiling_utils::job_wrapper_inputs args;
+			args.data = i;
+			submit_update_work_internal(update_wrapper, args, work, i);
+		}
+		else // No swapchain for updates, so else instead of else-if here ^_^
+		{
 			tile_data[i].threadData.tile_state = simple_tiling_utils::IDLE;
 		}
 	}
