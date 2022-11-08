@@ -22,6 +22,14 @@
 #error("unsupported vector width");
 #endif
 
+#if (NUM_VECTOR_LANES == 4)
+#define v_i __m128i
+#elif (NUM_VECTOR_LANES == 8)
+#define v_i __m256i
+#else
+#error("unsupported vector width");
+#endif
+
 namespace simple_tiling_utils
 {
 #if (NUM_VECTOR_LANES == 4)
