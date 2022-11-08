@@ -136,7 +136,9 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
                     const auto v_vec = v_op(div_ps)(yvec, hvec);
 
                     // Colors :)
-                    // vec3 col = 0.5 + 0.5 * cos(iTime + uv.xy);
+                    // Higher performance is possible with cosine lookup tables and other tricks, but inevitably introduces screen-tearing as
+                    // the refresh rate outpaces the draw-rate of the monitor, even with the locked framerates I have below
+                    // I think the framerate I'm getting here is good enough to demo with ^_^'
                     const auto point5_vec = v_op(set1_ps)(0.5f);
                     auto red_vec = v_op(mul_ps)(point5_vec, v_op(cos_ps)(v_op(add_ps)(tvec, u_vec)));
                     red_vec = v_op(add_ps)(red_vec, point5_vec);
