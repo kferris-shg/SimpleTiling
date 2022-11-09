@@ -28,7 +28,7 @@ static float lastTime = 0.0;
 
 #define NUM_TILE_THREADS 8
 
-static float update_job_demotext[NUM_VECTOR_LANES * NUM_TILE_THREADS] = { 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 0.0f,
+static float update_job_demonums[NUM_VECTOR_LANES * NUM_TILE_THREADS] = { 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 0.0f,
                                                                           1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 0.0f,
                                                                           1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 0.0f,
                                                                           1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 0.0f,
@@ -62,9 +62,9 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 
     simple_tiling::submit_update_work([](uint32_t tile_ndx)
     {
-        const auto nums = v_op(load_ps)(&update_job_demotext[tile_ndx * NUM_VECTOR_LANES]);
+        const auto nums = v_op(load_ps)(&update_job_demonums[tile_ndx * NUM_VECTOR_LANES]);
         const auto mathedNums = v_op(mul_ps)(nums, v_op(set1_ps)(2.0f));
-        memcpy(&update_job_demotext[tile_ndx * NUM_VECTOR_LANES], &mathedNums, sizeof(simple_tiling_utils::v_type));
+        memcpy(&update_job_demonums[tile_ndx * NUM_VECTOR_LANES], &mathedNums, sizeof(simple_tiling_utils::v_type));
     });
 
     // Main message loop:
@@ -79,8 +79,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
             ZoneNamed(drawZone, "Draw submission");
             simple_tiling::submit_draw_work([](simple_tiling_utils::v_type pixels, simple_tiling_utils::color_batch* colors_out)
                 {
-#define TEST_ANIMATION
-//#define TEST_RGB
+//#define TEST_ANIMATION
+#define TEST_RGB
 #ifdef TEST_RGB
 #if (NUM_VECTOR_LANES == 4)
                     colors_out->colors8bpc[0] = 0xff0000ff;
@@ -154,10 +154,6 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
                     }
 #endif
                 });
-        }
-        {
-            ZoneNamed(swapZone, "Tile swaps", true);
-            simple_tiling::swap_tile_buffers();
         }
         if (!TranslateAccelerator(msg.hwnd, hAccelTable, &msg))
         {

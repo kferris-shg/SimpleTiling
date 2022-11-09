@@ -122,6 +122,12 @@ fast_vec<uint32_t> blockedTileStrips[simple_tiling_utils::max_tiles] = {}; // En
 // Padded wrapper used with variables intended for specific threads, to avoid false sharing
 struct XThreadWrapper
 {
+	enum BLIT_MESSAGING
+	{
+		AWAITING_COPY,
+		COPIED
+	};
+
 	struct data
 	{
 		uint32_t tileMinX = 0;
@@ -131,6 +137,7 @@ struct XThreadWrapper
 		std::atomic_bool tile_running = {};
 		std::atomic_bool tile_shutdown_success = {};
 		std::atomic<simple_tiling_utils::TILE_STATES> tile_state = {};
+		std::atomic<BLIT_MESSAGING> blit_state = {};
 		std::thread tile;
 	};
 	data threadData = {};
@@ -175,28 +182,18 @@ void draw_wrapper(simple_tiling_utils::job_wrapper_inputs wrapper_inputs, simple
 
 	for (uint32_t pixel_row = minY; pixel_row < maxY; pixel_row++)
 	{
-		// Tile state checks - try to do these as infrequently as possible
-		bool tileBlocked = false;
-		if (!unblocked)
-		{
-			tileBlocked = (tileInfo.tile_state == simple_tiling_utils::UPLOADING);
-			if (!tileBlocked)
-			{
-				unblocked = true;
-				tileInfo.tile_state = simple_tiling_utils::PROCESSING;
-			}
-		}
-
-		if (tileBlocked)
-		{
-			blockedTileStrips[wrapper_inputs.data].push_back(pixel_row - minY);
-		}
-
 		//  Core pixel processing
 		for (uint32_t pixel_batch = minX; pixel_batch < maxX; pixel_batch += NUM_VECTOR_LANES) // For each vectorized pixel batch
 		{
+			// Define outputs
+			const uint32_t tile_width = maxX - minX;
+			const uint32_t tile_height = maxY - minY;
+			const uint32_t tile_px_x = pixel_batch - minX;
+			const uint32_t tile_px_y = pixel_row - minY;
+			const uint32_t tile_px = (tile_px_y * tile_width) + tile_px_x;
+			simple_tiling_utils::color_batch* batch_colors = tileBuffers[wrapper_inputs.data] + (tile_px / NUM_VECTOR_LANES);
+
 			// Issue work
-			simple_tiling_utils::color_batch batch_colors;
 			const float init_px = static_cast<float>((pixel_row * canvas_width) + pixel_batch);
 #if (NUM_VECTOR_LANES == 4)
 			{
@@ -204,51 +201,43 @@ void draw_wrapper(simple_tiling_utils::job_wrapper_inputs wrapper_inputs, simple
 			}
 #elif (NUM_VECTOR_LANES == 8)
 			{
-				wrapped_job(v_op(set_ps)(init_px, init_px + 1, init_px + 2, init_px + 3, init_px + 4, init_px + 5, init_px + 6, init_px + 7), &batch_colors);
+				wrapped_job(v_op(set_ps)(init_px, init_px + 1, init_px + 2, init_px + 3, init_px + 4, init_px + 5, init_px + 6, init_px + 7), batch_colors);
 			}
 #else
 #error("unsupported vector width");
 #endif
-
-			// Not uploading, safe to copy out tile color ^_^
-			const uint32_t tile_width = maxX - minX;
-			const uint32_t tile_height = maxY - minY;
-			const uint32_t tile_px_x = pixel_batch - minX;
-			const uint32_t tile_px_y = pixel_row - minY;
-			const uint32_t tile_px = (tile_px_y * tile_width) + tile_px_x;
-
-			// Keep working through blocks, staging colors until the main tile buffer becomes available again
-			simple_tiling_utils::color_batch* dstColors = tileBlocked ? stagingTileBuffers[wrapper_inputs.data] : tileBuffers[wrapper_inputs.data];
-			memcpy(dstColors + (tile_px / NUM_VECTOR_LANES), &batch_colors, sizeof(simple_tiling_utils::color_batch));
-			//memset(tileBuffers[static_cast<uint32_t>(wrapper_inputs.data)], 0xff, tile_width * tile_height * sizeof(simple_tiling_utils::v_type));
 		}
 	}
 
-	// Spin here if the tile-buffer is still blocked
+	// No reason to execute copy-outs if tiling has been stopped anyway
 	if (tileInfo.tile_running)
 	{
-		if (tileInfo.tile_state == simple_tiling_utils::UPLOADING)
-		{
-			tileInfo.tile_state.wait(simple_tiling_utils::UPLOADING);
-		}
-	}
-
-	// Safe to write to the tile buffer - blast out staging colors
-	// No reason to execute these if tiling has been stopped anyway
-	if (tileInfo.tile_running)
-	{
-		const uint32_t tile_width_vectors = (maxX - minX) / NUM_VECTOR_LANES;
-		const size_t num_strips = blockedTileStrips[wrapper_inputs.data].size();
-		for (size_t i = 0; i < num_strips; i++)
-		{
-			const uint32_t pixel_row = blockedTileStrips[wrapper_inputs.data].at(i);
-			const uint32_t strip_ndx = (pixel_row * tile_width_vectors);
-			memcpy(tileBuffers[wrapper_inputs.data] + strip_ndx, stagingTileBuffers[wrapper_inputs.data] + strip_ndx, sizeof(simple_tiling_utils::color_batch) * tile_width_vectors);
-		}
-		blockedTileStrips[wrapper_inputs.data].clear();
-
-		// Signal the main thread that this tile has finished working, so it can be safely copied to the back-buffer
+		// Signal the main thread that this tile is uploading, so the main thread knows to wait for it
 		tileInfo.tile_state = simple_tiling_utils::UPLOADING;
+
+		// Run back-buffer copies on source threads to prevent them stumbling over each other
+		// Only run copies if the main thread is currently waiting on one
+		if (tileInfo.blit_state == XThreadWrapper::AWAITING_COPY)
+		{
+			const uint32_t dest_w = (maxX - minX);
+			const uint32_t src_w = (maxX - minX) / NUM_VECTOR_LANES;
+
+			auto in_ptr = tileBuffers[wrapper_inputs.data];
+			auto out_ptr = back_buffer + ((minY * canvas_width) + minX);
+
+			for (uint32_t y = minY; y < maxY; y++)
+			{
+				memcpy(out_ptr, in_ptr, sizeof(uint32_t) * dest_w);
+				in_ptr += src_w;
+				out_ptr += canvas_width;
+			}
+
+			tileInfo.blit_state = XThreadWrapper::COPIED;
+
+			// Signal the main thread that we've finished copying-out this tile, so the main thread can proceed with e.g. frame blits
+			tileInfo.tile_state = simple_tiling_utils::PROCESSING;
+			tileInfo.tile_state.notify_one();
+		}
 	}
 }
 
@@ -407,6 +396,7 @@ void simple_tiling::setup(uint32_t num_tiles, uint32_t window_width, uint32_t wi
 		tile_data[i].threadData.tile_running = true;
 		tile_data[i].threadData.tile_shutdown_success = false;
 		tile_data[i].threadData.tile_state = simple_tiling_utils::IDLE;
+		tile_data[i].threadData.blit_state = XThreadWrapper::COPIED;
 		tile_data[i].threadData.tile = std::thread(thread_main, i);
 
 		stagingTileBuffers[i] = alloc_array<simple_tiling_utils::color_batch>(tile_area_vectors); // Free allocation, ew; should use custom vector that allocates with [alloc_array]
@@ -461,47 +451,29 @@ void simple_tiling::shutdown()
 	free(tiling_pool); // <3 linear allocators
 }
 
-// Called from your application's main loop
-void simple_tiling::swap_tile_buffers()
-{
-	for (uint32_t i = 0; i < numTiles; i++)
-	{
-		//memset(back_buffer + canvas_width * tileMinY[i], 0xff, canvas_width * sizeof(uint32_t));
-		XThreadWrapper::data& tileInfo = tile_data[i].threadData;
-		if (tileInfo.tile_state == simple_tiling_utils::UPLOADING)
-		{
-			const uint32_t minY = tileInfo.tileMinY;
-			const uint32_t minX = tileInfo.tileMinX;
-			const uint32_t maxY = tileInfo.tileMaxY;
-			const uint32_t maxX = tileInfo.tileMaxX;
-			const uint32_t dest_w = (maxX - minX);
-			const uint32_t src_w = (maxX - minX) / NUM_VECTOR_LANES;
-
-			auto in_ptr = tileBuffers[i];
-			auto out_ptr = back_buffer + ((minY * canvas_width) + minX);
-
-			for (uint32_t y = minY; y < maxY; y++)
-			{
-				memcpy(out_ptr, in_ptr, sizeof(uint32_t) * dest_w);
-				in_ptr += src_w;
-				out_ptr += canvas_width;
-			}
-
-			// Assume that we want to start drawing again immediately after copying-out
-			// (=> enables frames to begin as soon as possible)
-			// If we don't want to draw immediately, client code can supply a mask to [submit_work(...)] to skip it in the next frame,
-			// which will cause its state to swap over from [PROCESSING] to [IDLE] (the IDLE state doesn't affect anything itself, but it can be useful
-			// for debugging thread occupancy or verifying if threads have been separated from rendering before taking on update work)
-			tileInfo.tile_state = simple_tiling_utils::PROCESSING;
-			tileInfo.tile_state.notify_one();
-		}
-	}
-}
-
 // Called from the WM_PAINT block of your message pump
 // (between BeginPaint() and EndPaint())
 void simple_tiling::win_paint(void* hdc)
 {
-	uint32_t test = SetDIBitsToDevice(static_cast<HDC>(hdc), 0, 0, canvas_width, canvas_height, 0, 0, 0, canvas_height, back_buffer, &canvas_bmi, DIB_RGB_COLORS);
-	assert(test);
+	for (uint32_t i = 0; i < numTiles; i++)
+	{
+		XThreadWrapper::data& tileInfo = tile_data[i].threadData;
+
+		// Spin here if the back-buffer is still blocked
+		if (tileInfo.tile_state == simple_tiling_utils::UPLOADING)
+		{
+			tileInfo.blit_state = XThreadWrapper::AWAITING_COPY;
+			tileInfo.blit_state.wait(XThreadWrapper::COPIED);
+		}
+
+		const uint32_t minY = tileInfo.tileMinY;
+		const uint32_t minX = tileInfo.tileMinX;
+		const uint32_t maxY = tileInfo.tileMaxY;
+		const uint32_t maxX = tileInfo.tileMaxX;
+		const uint32_t w = maxX - minX;
+		const uint32_t h = maxY - minY;
+
+		uint32_t test = SetDIBitsToDevice(static_cast<HDC>(hdc), minX, minY, w, h, minX, minY, minY, h, back_buffer, &canvas_bmi, DIB_RGB_COLORS);
+		assert(test);
+	}
 }

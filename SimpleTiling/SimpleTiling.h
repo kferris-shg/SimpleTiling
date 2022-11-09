@@ -93,9 +93,6 @@ class simple_tiling
 		static void setup(uint32_t num_tiles, uint32_t window_width, uint32_t window_height);
 		static void shutdown();
 
-		// Called from your application's main loop
-		static void swap_tile_buffers();
-
 		// Called from the WM_PAINT block of your message pump
 		static void win_paint(void* hdc);
 };
