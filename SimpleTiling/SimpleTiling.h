@@ -89,8 +89,18 @@ class simple_tiling
 		// Update work takes a tile index, but nothing else - all other job inputs/outputs are expected to come from client statics/globals/captures
 		static void submit_update_work(simple_tiling_utils::update_job work, uint64_t tile_mask = 0xffffffffffffffff);
 
+		// Simple sync primitives - useful when the cpu needs to go wide to process work but can't progress until the work is finished
+		static void WaitForTile(uint32_t tile_ndx);
+		static void WaitForTiles();
+
+		// Get the total number of tiles used for the current project + the number per-axis
+		// Useful for managing work distribution between jobs, especially in compute work (where each tile has to manage many individual work items & not a single block of 4/8 vector lanes)
+		static uint32_t GetNumTilesTotal();
+		static uint32_t GetNumTilesX();
+		static uint32_t GetNumTilesY();
+
 		// Setup/shutdown
-		static void setup(uint32_t num_tiles, uint32_t window_width, uint32_t window_height);
+		static void setup(uint32_t num_tiles, uint32_t window_width, uint32_t window_height, bool using_interlacing);
 		static void shutdown();
 
 		// Called from the WM_PAINT block of your message pump

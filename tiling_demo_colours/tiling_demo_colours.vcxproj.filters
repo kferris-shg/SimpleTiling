@@ -27,15 +27,9 @@
     <ClInclude Include="tiling_demo_colours.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="..\ThirdParty\tracy-0.8\Tracy.hpp">
-      <Filter>Header Files</Filter>
-    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="tiling_demo_colours.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="..\ThirdParty\tracy-0.8\TracyClient.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

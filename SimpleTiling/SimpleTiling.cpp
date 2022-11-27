@@ -6,6 +6,7 @@
 #include <vector>
 #include <intrin.h>
 #include <cassert>
+#include "..\ThirdParty\tracy-0.8\Tracy.hpp"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -134,6 +135,7 @@ struct XThreadWrapper
 		uint32_t tileMaxX = 0;
 		uint32_t tileMinY = 0;
 		uint32_t tileMaxY = 0;
+		uint8_t interlace_offset = 0; // 2D interlacing on every second row/column, offset is either 0 or 1; mostly only used for draw jobs
 		std::atomic_bool tile_running = {};
 		std::atomic_bool tile_shutdown_success = {};
 		std::atomic<simple_tiling_utils::TILE_STATES> tile_state = {};
@@ -171,20 +173,34 @@ void simple_tiling::submit_update_work_internal(simple_tiling_utils::update_job_
 	tile_update_jobs[tile_ndx].append_job(work, wrapped_job, wrapper_inputs);
 }
 
+bool interlacing = true;
 void draw_wrapper(simple_tiling_utils::job_wrapper_inputs wrapper_inputs, simple_tiling_utils::draw_job wrapped_job)
 {
+	ZoneScoped;
 	XThreadWrapper::data& tileInfo = tile_data[wrapper_inputs.data].threadData;
 	const uint32_t minX = tileInfo.tileMinX;
 	const uint32_t maxX = tileInfo.tileMaxX;
 	const uint32_t minY = tileInfo.tileMinY;
 	const uint32_t maxY = tileInfo.tileMaxY;
+	const uint8_t interlace_offs = tileInfo.interlace_offset;
 	bool unblocked = false;
 
 	for (uint32_t pixel_row = minY; pixel_row < maxY; pixel_row++)
 	{
+		// Optionally skip rows if interlacing is enabled
+		if (interlacing && ((pixel_row + interlace_offs) % 2))
+		{
+			continue;
+		}
+
 		//  Core pixel processing
 		for (uint32_t pixel_batch = minX; pixel_batch < maxX; pixel_batch += NUM_VECTOR_LANES) // For each vectorized pixel batch
 		{
+			if (interlacing && (((pixel_batch / NUM_VECTOR_LANES) + interlace_offs) % 2))
+			{
+				continue;
+			}
+
 			// Define outputs
 			const uint32_t tile_width = maxX - minX;
 			const uint32_t tile_height = maxY - minY;
@@ -243,6 +259,7 @@ void draw_wrapper(simple_tiling_utils::job_wrapper_inputs wrapper_inputs, simple
 
 void update_wrapper(simple_tiling_utils::job_wrapper_inputs wrapper_inputs, simple_tiling_utils::update_job wrapped_job)
 {
+	ZoneScoped;
 	XThreadWrapper::data& tileInfo = tile_data[wrapper_inputs.data].threadData;
 	if (tileInfo.tile_running) // Avoid starting new jobs on terminated tiles
 	{
@@ -289,7 +306,7 @@ void simple_tiling::submit_update_work(simple_tiling_utils::update_job work, uin
 
 void thread_main(uint32_t tile_ndx)
 {
-	// Should use condi-vars here to avoid spamming all threads all the time
+	uint32_t frame_ctr = 0;
 	XThreadWrapper::data& tile_info = tile_data[tile_ndx].threadData;
 	while (tile_info.tile_running)
 	{
@@ -299,6 +316,8 @@ void thread_main(uint32_t tile_ndx)
 		if (tile_draw_jobs[tile_ndx].front > 0)
 		{
 			tile_draw_jobs[tile_ndx].consume_job();
+			tile_info.interlace_offset = frame_ctr % 2;
+			frame_ctr++;
 		}
 		if (tile_update_jobs[tile_ndx].front > 0)
 		{
@@ -306,6 +325,36 @@ void thread_main(uint32_t tile_ndx)
 		}
 	}
 	tile_info.tile_shutdown_success = true;
+}
+
+void simple_tiling::WaitForTile(uint32_t tile_ndx)
+{
+	XThreadWrapper::data& tile_nfo = tile_data[tile_ndx].threadData;
+	tile_nfo.tile_state.wait(simple_tiling_utils::IDLE);
+}
+
+void simple_tiling::WaitForTiles()
+{
+	for (uint32_t i = 0; i < numTiles; i++)
+	{
+		XThreadWrapper::data& tile_nfo = tile_data[i].threadData;
+		tile_nfo.tile_state.wait(simple_tiling_utils::IDLE);
+	}
+}
+
+static uint32_t GetNumTilesTotal()
+{
+	return numTiles;
+}
+
+static uint32_t GetNumTilesX()
+{
+	return numTilesX;
+}
+
+static uint32_t GetNumTilesY()
+{
+	return numTilesY;
 }
 
 static constexpr uint64_t mem_budget = 100000000;
@@ -329,7 +378,7 @@ t* alloc_array(uint64_t num_elts)
 
 // Call after your application's window setup
 //uint32_t* test_canvas = nullptr;
-void simple_tiling::setup(uint32_t num_tiles, uint32_t window_width, uint32_t window_height)
+void simple_tiling::setup(uint32_t num_tiles, uint32_t window_width, uint32_t window_height, bool using_interlacing)
 {
 	// Resolve canvas dimensions
 	canvas_width = window_width;
@@ -389,6 +438,7 @@ void simple_tiling::setup(uint32_t num_tiles, uint32_t window_width, uint32_t wi
 	const uint32_t tile_area_vectors = tile_width_vectors * tile_height_vectors;
 	memset(tile_draw_jobs, 0x0, sizeof(simple_tiling_utils::job_q<simple_tiling_utils::DRAW_WORK>) * num_tiles);
 	memset(tile_update_jobs, 0x0, sizeof(simple_tiling_utils::job_q<simple_tiling_utils::DRAW_WORK>) * num_tiles);
+	interlacing = using_interlacing;
 	for (uint32_t i = 0; i < num_tiles; i++)
 	{
 		tileBuffers[i] = alloc_array<simple_tiling_utils::color_batch>(tile_area_vectors);
@@ -397,6 +447,7 @@ void simple_tiling::setup(uint32_t num_tiles, uint32_t window_width, uint32_t wi
 		tile_data[i].threadData.tile_shutdown_success = false;
 		tile_data[i].threadData.tile_state = simple_tiling_utils::IDLE;
 		tile_data[i].threadData.blit_state = XThreadWrapper::COPIED;
+		tile_data[i].threadData.interlace_offset = 0;
 		tile_data[i].threadData.tile = std::thread(thread_main, i);
 
 		stagingTileBuffers[i] = alloc_array<simple_tiling_utils::color_batch>(tile_area_vectors); // Free allocation, ew; should use custom vector that allocates with [alloc_array]
@@ -455,6 +506,7 @@ void simple_tiling::shutdown()
 // (between BeginPaint() and EndPaint())
 void simple_tiling::win_paint(void* hdc)
 {
+	ZoneScoped;
 	for (uint32_t i = 0; i < numTiles; i++)
 	{
 		XThreadWrapper::data& tileInfo = tile_data[i].threadData;

@@ -6,7 +6,6 @@
 #include "..\SimpleTiling\SimpleTiling.h"
 #undef min
 #undef max
-#include "..\ThirdParty\tracy-0.8\Tracy.hpp"
 #include <chrono>
 
 #define MAX_LOADSTRING 100
@@ -35,7 +34,7 @@ static float update_job_demonums[NUM_VECTOR_LANES * NUM_TILE_THREADS] = { 1.0f, 
                                                                           1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 0.0f,
                                                                           1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 0.0f,
                                                                           1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 0.0f,
-                                                                          1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 0.0f, };
+                                                                          1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 0.0f };
 
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
                      _In_opt_ HINSTANCE hPrevInstance,
@@ -74,13 +73,12 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
         double t = static_cast<double>(clock.time_since_epoch().count());
         t *= 1.0e-9;
         lastTime = static_cast<float>(t);
-
         {
-            ZoneNamed(drawZone, "Draw submission");
             simple_tiling::submit_draw_work([](simple_tiling_utils::v_type pixels, simple_tiling_utils::color_batch* colors_out)
-                {
-//#define TEST_ANIMATION
-#define TEST_RGB
+            {
+#define TEST_ANIMATION
+//#define TEST_ANIMATION_MONOCHROME
+//#define TEST_RGB
 #ifdef TEST_RGB
 #if (NUM_VECTOR_LANES == 4)
                     colors_out->colors8bpc[0] = 0xff0000ff;
@@ -152,16 +150,20 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
                         colors_out->colors8bpc[i] = uint32_t(v_access(red_vec)[i] * 255.5f) | (uint32_t(v_access(blue_vec)[i] * 255.5f) << 8) |
                             (255 << 16) | (255 << 24);
                     }
+#elif defined(TEST_ANIMATION_MONOCHROME)
+                    const auto tvec = v_op(set1_ps)(lastTime);
+                    const auto sinvec = v_op(sin_ps)(tvec);
+                    memcpy(colors_out, &sinvec, sizeof(sinvec));
 #endif
-                });
+            });
         }
+
         if (!TranslateAccelerator(msg.hwnd, hAccelTable, &msg))
         {
             TranslateMessage(&msg);
             DispatchMessage(&msg);
             InvalidateRect(msg.hwnd, NULL, false);
         }
-        FrameMark;
     }
     simple_tiling::shutdown();
     return (int) msg.wParam;
@@ -219,7 +221,7 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 
    // Required to be initialized early, since [ShowWindow] will invoke WM_PAINT -> ::win_paint, which depeends on
    // a valid BITMAPINFO being defined for copy-outs
-   simple_tiling::setup(NUM_TILE_THREADS, window_width, window_height);
+   simple_tiling::setup(NUM_TILE_THREADS, window_width, window_height, true);
 
    ShowWindow(hWnd, nCmdShow);
    UpdateWindow(hWnd);
@@ -236,6 +238,7 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 //  WM_DESTROY  - post a quit message and return
 //
 //
+uint64_t lastDrawTime = 0;
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
     switch (message)
@@ -259,13 +262,14 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         break;
     case WM_PAINT:
         {
-            ZoneScoped;
-            if (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count() % 15 == 0) // 15 millisecond vsync
+            uint64_t currDrawTime = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+            if ((currDrawTime - lastDrawTime) > 15) // 15 millisecond "vsync"
             {
                 PAINTSTRUCT ps;
                 HDC hdc = BeginPaint(hWnd, &ps);
                 simple_tiling::win_paint(hdc);
                 EndPaint(hWnd, &ps);
+                lastDrawTime = currDrawTime;
             }
         }
         break;
