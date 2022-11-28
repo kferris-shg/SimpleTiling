@@ -90,11 +90,11 @@ class simple_tiling
 		static void submit_update_work(simple_tiling_utils::update_job work, uint64_t tile_mask = 0xffffffffffffffff);
 
 		// Simple sync primitives - useful when the cpu needs to go wide to process work but can't progress until the work is finished
-		static void WaitForTile(uint32_t tile_ndx);
-		static void WaitForTiles();
+		static void WaitForTileProcessing(uint32_t tile_ndx);
+		static void WaitForTileUpload(uint32_t tile_ndx);
 
 		// Get the total number of tiles used for the current project + the number per-axis
-		// Useful for managing work distribution between jobs, especially in compute work (where each tile has to manage many individual work items & not a single block of 4/8 vector lanes)
+		// Useful for managing work distribution between jobs, especially in compute work (where each tile has to manage many individual work items & not a single block of 4/8 vector lanes) (>= 4-8)
 		static uint32_t GetNumTilesTotal();
 		static uint32_t GetNumTilesX();
 		static uint32_t GetNumTilesY();

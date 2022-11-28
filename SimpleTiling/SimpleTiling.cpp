@@ -319,6 +319,7 @@ void thread_main(uint32_t tile_ndx)
 			tile_info.interlace_offset = frame_ctr % 2;
 			frame_ctr++;
 		}
+
 		if (tile_update_jobs[tile_ndx].front > 0)
 		{
 			tile_update_jobs[tile_ndx].consume_job();
@@ -327,32 +328,29 @@ void thread_main(uint32_t tile_ndx)
 	tile_info.tile_shutdown_success = true;
 }
 
-void simple_tiling::WaitForTile(uint32_t tile_ndx)
+void simple_tiling::WaitForTileProcessing(uint32_t tile_ndx)
 {
 	XThreadWrapper::data& tile_nfo = tile_data[tile_ndx].threadData;
-	tile_nfo.tile_state.wait(simple_tiling_utils::IDLE);
+	tile_nfo.tile_state.wait(simple_tiling_utils::PROCESSING); // Uncertain about this implementation - seems unstable for short-lived tasks or consumers using many tiles at once
 }
 
-void simple_tiling::WaitForTiles()
+void simple_tiling::WaitForTileUpload(uint32_t tile_ndx)
 {
-	for (uint32_t i = 0; i < numTiles; i++)
-	{
-		XThreadWrapper::data& tile_nfo = tile_data[i].threadData;
-		tile_nfo.tile_state.wait(simple_tiling_utils::IDLE);
-	}
+	XThreadWrapper::data& tile_nfo = tile_data[tile_ndx].threadData;
+	tile_nfo.tile_state.wait(simple_tiling_utils::UPLOADING);
 }
 
-static uint32_t GetNumTilesTotal()
+uint32_t simple_tiling::GetNumTilesTotal()
 {
 	return numTiles;
 }
 
-static uint32_t GetNumTilesX()
+uint32_t simple_tiling::GetNumTilesX()
 {
 	return numTilesX;
 }
 
-static uint32_t GetNumTilesY()
+uint32_t simple_tiling::GetNumTilesY()
 {
 	return numTilesY;
 }
