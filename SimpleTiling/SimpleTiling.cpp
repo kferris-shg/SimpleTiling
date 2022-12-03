@@ -135,7 +135,8 @@ struct XThreadWrapper
 		uint32_t tileMaxX = 0;
 		uint32_t tileMinY = 0;
 		uint32_t tileMaxY = 0;
-		uint8_t interlace_offset = 0; // 2D interlacing on every second row/column, offset is either 0 or 1; mostly only used for draw jobs
+		uint8_t interlace_offset_x = 0; // 2D interlacing on every second row/column, offset is either 0 or 1; mostly only used for draw jobs
+		uint8_t interlace_offset_y = 0; // 2D interlacing on every second row/column, offset is either 0 or 1; mostly only used for draw jobs
 		std::atomic_bool tile_running = {};
 		std::atomic_bool tile_shutdown_success = {};
 		std::atomic<simple_tiling_utils::TILE_STATES> tile_state = {};
@@ -182,25 +183,18 @@ void draw_wrapper(simple_tiling_utils::job_wrapper_inputs wrapper_inputs, simple
 	const uint32_t maxX = tileInfo.tileMaxX;
 	const uint32_t minY = tileInfo.tileMinY;
 	const uint32_t maxY = tileInfo.tileMaxY;
-	const uint8_t interlace_offs = tileInfo.interlace_offset;
+	const uint8_t interlace_offs_x = tileInfo.interlace_offset_x;
+	const uint8_t interlace_offs_y = tileInfo.interlace_offset_y;
 	bool unblocked = false;
 
-	for (uint32_t pixel_row = minY; pixel_row < maxY; pixel_row++)
+	// Need to de-interlace X and Y separately - otherwise one axis will always have gaps
+	uint32_t dy = interlace_offs_y * interlacing;
+	uint32_t dx = interlace_offs_x * NUM_VECTOR_LANES * interlacing;
+	for (uint32_t pixel_row = minY + dy; pixel_row < maxY; pixel_row += (1 + dy))
 	{
-		// Optionally skip rows if interlacing is enabled
-		if (interlacing && ((pixel_row + interlace_offs) % 2))
-		{
-			continue;
-		}
-
 		//  Core pixel processing
-		for (uint32_t pixel_batch = minX; pixel_batch < maxX; pixel_batch += NUM_VECTOR_LANES) // For each vectorized pixel batch
+		for (uint32_t pixel_batch = minX + dx; pixel_batch < maxX; pixel_batch += (NUM_VECTOR_LANES + dx)) // For each vectorized pixel batch
 		{
-			if (interlacing && (((pixel_batch / NUM_VECTOR_LANES) + interlace_offs) % 2))
-			{
-				continue;
-			}
-
 			// Define outputs
 			const uint32_t tile_width = maxX - minX;
 			const uint32_t tile_height = maxY - minY;
@@ -273,7 +267,7 @@ void simple_tiling::submit_draw_work(simple_tiling_utils::draw_job work, uint64_
 {
 	for (uint32_t i = 0; i < numTiles; i++) // For each tile
 	{
-		if (tile_mask & (0x1ull << i)) // Skip processing masked tiles
+		if (tile_mask & (1ull << i)) // Skip processing masked tiles
 		{
 			simple_tiling_utils::job_wrapper_inputs args;
 			args.data = i;
@@ -316,7 +310,8 @@ void thread_main(uint32_t tile_ndx)
 		if (tile_draw_jobs[tile_ndx].front > 0)
 		{
 			tile_draw_jobs[tile_ndx].consume_job();
-			tile_info.interlace_offset = frame_ctr % 2;
+			tile_info.interlace_offset_x = frame_ctr % 2;
+			tile_info.interlace_offset_y = (frame_ctr % 2) * NUM_VECTOR_LANES;
 			frame_ctr++;
 		}
 
@@ -445,7 +440,8 @@ void simple_tiling::setup(uint32_t num_tiles, uint32_t window_width, uint32_t wi
 		tile_data[i].threadData.tile_shutdown_success = false;
 		tile_data[i].threadData.tile_state = simple_tiling_utils::IDLE;
 		tile_data[i].threadData.blit_state = XThreadWrapper::COPIED;
-		tile_data[i].threadData.interlace_offset = 0;
+		tile_data[i].threadData.interlace_offset_x = 0;
+		tile_data[i].threadData.interlace_offset_y = 0;
 		tile_data[i].threadData.tile = std::thread(thread_main, i);
 
 		stagingTileBuffers[i] = alloc_array<simple_tiling_utils::color_batch>(tile_area_vectors); // Free allocation, ew; should use custom vector that allocates with [alloc_array]
