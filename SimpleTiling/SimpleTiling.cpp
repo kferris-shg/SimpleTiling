@@ -25,12 +25,6 @@ uint32_t* back_buffer = nullptr;
 // Our design goal is to automate tiling/thread scheduling, so that rendering apps can focus on their core details instead
 namespace simple_tiling_utils
 {
-	enum WORK_TYPES
-	{
-		DRAW_WORK,
-		UPDATE_WORK
-	};
-
 	template<WORK_TYPES work_type>
 	struct job_q
 	{
@@ -40,6 +34,13 @@ namespace simple_tiling_utils
 		// Work submission (all lambdas!)
 		using job_wrapper = std::conditional<work_type == DRAW_WORK, draw_job_wrapper, update_job_wrapper>::type;
 		using wrapped_job = std::conditional<work_type == DRAW_WORK, draw_job, update_job>::type;
+
+		struct job_package
+		{
+			job_wrapper wrapper;
+			job_wrapper_inputs wrapper_inputs;
+			wrapped_job job;
+		};
 		void append_job(job_wrapper wrapper, wrapped_job job, job_wrapper_inputs wrapper_inputs)
 		{
 			// Drop work submitted beyond our queue limit

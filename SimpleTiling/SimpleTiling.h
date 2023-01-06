@@ -59,6 +59,31 @@ namespace simple_tiling_utils
 	using draw_job_wrapper = void(*)(job_wrapper_inputs, draw_job);
 	using update_job_wrapper = void(*)(job_wrapper_inputs, update_job);
 
+	// Types of job (draw/update), to help with work submission & processing
+	enum WORK_TYPES
+	{
+		DRAW_WORK,
+		UPDATE_WORK
+	};
+
+	// Encapsulated graph of tasks, to be submitted in a single block (as in a graphics pipeline)
+	// These graphs should generally be prepared on start-up and dispatched in the main program loop
+	// (unless something changes at runtime to regenerate them, e.g. new asset, different screen size, etc)
+	struct task_graph
+	{
+		public:
+			static constexpr uint32_t max_graph_depth = 8;
+			void append_draw();
+			void append_update();
+
+		private:
+			update_job packed_update_jobs[max_graph_depth] = {};
+			draw_job packed_draw_jobs[max_graph_depth] = {};
+			WORK_TYPES workTypes[max_graph_depth] = {};
+			uint32_t job_count = 0;
+	};
+
+
 	// Thread signals have three separate states; IDLE, PROCESSING, and UPLOADING
 	// Threads swap to UPLOADING when they're ready for copy-out, and back to IDLE when the CPU finishes with their datá
 	// Threads can process work in any state, but not write out to the scratch buffer until they enter IDLE or PROCESSING
@@ -88,6 +113,11 @@ class simple_tiling
 
 		// Update work takes a tile index, but nothing else - all other job inputs/outputs are expected to come from client statics/globals/captures
 		static void submit_update_work(simple_tiling_utils::update_job work, uint64_t tile_mask = 0xffffffffffffffff);
+
+		// Submit a linear graph of jobs to execute; each graph can contain a mix of update & draw work
+		// Update jobs with dependencies on draw work require explicit waits, since those two pipes are asynchronous on each thread;
+		// still not certain how to implement that; something that doesn't increase contention or memory footprint would be ideal
+		static void submit_task_graph(simple_tiling_utils::task_graph& graph);
 
 		// Simple sync primitives - useful when the cpu needs to go wide to process work but can't progress until the work is finished
 		static void WaitForTileProcessing(uint32_t tile_ndx);
