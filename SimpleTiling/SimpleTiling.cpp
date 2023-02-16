@@ -311,12 +311,6 @@ void simple_tiling::submit_update_work(simple_tiling_utils::update_job work, sim
 	tile_jobs.append_job(work, numTiles, simple_tiling_utils::UPDATE_WORK, sync_mode, tile_mask);
 }
 
-// Thread primitives controlling the producer thread (frame_main) & preventing it from supplying too much work to tile threads
-// (executing thread_main)
-std::atomic_bool producer_resting = false;
-std::mutex frame_pacer_mutex;
-std::condition_variable frame_pacer;
-
 void thread_main(uint32_t tile_ndx)
 {
 	uint32_t tick_ctr = 0;
