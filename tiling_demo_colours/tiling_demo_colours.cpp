@@ -23,18 +23,9 @@ INT_PTR CALLBACK    About(HWND, UINT, WPARAM, LPARAM);
 
 static constexpr uint32_t window_width = 1920, window_height = 1080;
 
-static float lastTime = 0.0;
-
 #define NUM_TILE_THREADS 8
 
-static float update_job_demonums[NUM_VECTOR_LANES * NUM_TILE_THREADS] = { 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 0.0f,
-                                                                          1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 0.0f,
-                                                                          1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 0.0f,
-                                                                          1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 0.0f,
-                                                                          1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 0.0f,
-                                                                          1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 0.0f,
-                                                                          1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 0.0f,
-                                                                          1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 0.0f };
+static float thread_times[NUM_TILE_THREADS] = {};
 
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
                      _In_opt_ HINSTANCE hPrevInstance,
@@ -59,104 +50,94 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 
     MSG msg;
 
-    simple_tiling::submit_update_work([](uint32_t tile_ndx)
-    {
-        const auto nums = v_op(load_ps)(&update_job_demonums[tile_ndx * NUM_VECTOR_LANES]);
-        const auto mathedNums = v_op(mul_ps)(nums, v_op(set1_ps)(2.0f));
-        memcpy(&update_job_demonums[tile_ndx * NUM_VECTOR_LANES], &mathedNums, sizeof(simple_tiling_utils::v_type));
-    });
-
     // Main message loop:
+    bool frame_issued = false;
     while (GetMessage(&msg, nullptr, 0, 0))
     {
-        const auto clock = std::chrono::steady_clock::now();
-        double t = static_cast<double>(clock.time_since_epoch().count());
-        t *= 1.0e-9;
-        lastTime = static_cast<float>(t);
+        simple_tiling::submit_update_work([](uint32_t tile_ndx)
         {
-            simple_tiling::submit_draw_work([](simple_tiling_utils::v_type pixels, simple_tiling_utils::color_batch* colors_out)
-            {
+            thread_times[tile_ndx] += 0.001f;
+        });
+
+        simple_tiling::submit_draw_work([](__m256 pixels, uint32_t threadID, simple_tiling_utils::color_batch* colors_out)
+        {
 #define TEST_ANIMATION
 //#define TEST_ANIMATION_MONOCHROME
 //#define TEST_RGB
+//#define TEST_PIXEL_XOR
 #ifdef TEST_RGB
-#if (NUM_VECTOR_LANES == 4)
-                    colors_out->colors8bpc[0] = 0xff0000ff;
-                    colors_out->colors8bpc[1] = 0xff00ff00;
-                    colors_out->colors8bpc[2] = 0xffff0000;
-                    colors_out->colors8bpc[3] = 0xffffffff;
-#elif (NUM_VECTOR_LANES == 8)
-                    colors_out->colors8bpc[0] = 0xff0000ff;
-                    colors_out->colors8bpc[1] = 0xff00ff00;
-                    colors_out->colors8bpc[2] = 0xffff0000;
-                    colors_out->colors8bpc[3] = 0xffffffff;
-                    colors_out->colors8bpc[4] = 0xff0000ff;
-                    colors_out->colors8bpc[5] = 0xf000ff00;
-                    colors_out->colors8bpc[6] = 0xffff0000;
-                    colors_out->colors8bpc[7] = 0xffffffff;
-#endif
+            colors_out->colors8bpc[0] = 0xff0000ff;
+            colors_out->colors8bpc[1] = 0xff00ff00;
+            colors_out->colors8bpc[2] = 0xffff0000;
+            colors_out->colors8bpc[3] = 0xffffffff;
+            colors_out->colors8bpc[4] = 0xff0000ff;
+            colors_out->colors8bpc[5] = 0xf000ff00;
+            colors_out->colors8bpc[6] = 0xffff0000;
+            colors_out->colors8bpc[7] = 0xffffffff;
 #elif defined (TEST_PIXEL_XOR)
-                    auto wvec = v_op(set1_ps)(window_width);
-                    auto yvec = v_op(floor_ps)(v_op(div_ps)(pixels, wvec));
-                    auto xvec = v_op(sub_ps)(pixels, v_op(mul_ps)(yvec, wvec));
-                    auto rgb_vec = v_op(xor_ps)(xvec, yvec);
-                    //v_op(div_ps)(xvec, wvec);
+            auto wvec = _mm256_set1_ps(window_width);
+            auto yvec = _mm256_floor_ps(_mm256_div_ps(pixels, wvec));
+            auto xvec = _mm256_sub_ps(pixels, _mm256_mul_ps(yvec, wvec));
+            auto rgb_vec = _mm256_xor_ps(xvec, yvec);
 
-      // Not super accurate, but very fast
-                    memcpy(colors_out, &rgb_vec, sizeof(simple_tiling_utils::v_type));
+            // Not super accurate, but very fast
+            memcpy(colors_out, &rgb_vec, sizeof(__m256));
 
-                    // Memcpy doesn't really preserve pixel colors - should find a way to run this snippet
-                    // using AVX2 intrinsics for algorithms that need more precise control
-                    //for (uint32_t i = 0; i < NUM_VECTOR_LANES; i++)
-                    //{
-                    //    colors_out->colors8bpc[i] = v_access(rgb_vec)[i] * 255.5f;
-                    //}
+            // Memcpy doesn't really preserve pixel colors - should find a way to run this snippet
+            // using AVX2 intrinsics for algorithms that need more precise control
+            //for (uint32_t i = 0; i < NUM_VECTOR_LANES; i++)
+            //{
+            //    colors_out->colors8bpc[i] = v_access(rgb_vec)[i] * 255.5f;
+            //}
 
-                    // slo but more predictable than straight memcpy, useful for debugging
-                    //rgb_vec = v_op(mul_ps)(rgb_vec, v_op(set1_ps)(256.0f));
-                    //for (uint32_t i = 0; i < NUM_VECTOR_LANES; i++)
-                    //{
-                    //    colors_out->colors8bpc[i] = v_access(rgb_vec)[i];
-                    //}
+            // slo but more predictable than straight memcpy, useful for debugging
+            //rgb_vec = _mm256_mul_ps)(rgb_vec, _mm256_set1_ps)(256.0f));
+            //for (uint32_t i = 0; i < NUM_VECTOR_LANES; i++)
+            //{
+            //    colors_out->colors8bpc[i] = v_access(rgb_vec)[i];
+            //}
 
 #elif defined (TEST_ANIMATION)
-                    // Load time
-                    const auto tvec = v_op(set1_ps)(lastTime);
+            // Load time
+            const auto tvec = _mm256_set1_ps(thread_times[threadID]);
 
-                    // Load other useful constants
-                    const auto wvec = v_op(set1_ps)(window_width);
-                    const auto hvec = v_op(set1_ps)(window_height);
+            // Load other useful constants
+            const auto wvec = _mm256_set1_ps(window_width);
+            const auto hvec = _mm256_set1_ps(window_height);
 
-                    // Compute pixel coordinates
-                    const auto yvec = v_op(floor_ps)(v_op(div_ps)(pixels, wvec));
-                    const auto xvec = v_op(sub_ps)(pixels, v_op(mul_ps)(yvec, wvec));
-                    const auto u_vec = v_op(div_ps)(xvec, wvec);
-                    const auto v_vec = v_op(div_ps)(yvec, hvec);
+            // Compute pixel coordinates
+            const auto yvec = _mm256_floor_ps(_mm256_div_ps(pixels, wvec));
+            const auto xvec = _mm256_sub_ps(pixels, _mm256_mul_ps(yvec, wvec));
+            const auto u_vec = _mm256_div_ps(xvec, wvec);
+            const auto v_vec = _mm256_div_ps(yvec, hvec);
 
-                    // Colors :)
-                    // Higher performance is possible with cosine lookup tables and other tricks, but inevitably introduces screen-tearing as
-                    // the refresh rate outpaces the draw-rate of the monitor, even with the locked framerates I have below
-                    // I think the framerate I'm getting here is good enough to demo with ^_^'
-                    const auto point5_vec = v_op(set1_ps)(0.5f);
-                    auto red_vec = v_op(mul_ps)(point5_vec, v_op(cos_ps)(v_op(add_ps)(tvec, u_vec)));
-                    red_vec = v_op(add_ps)(red_vec, point5_vec);
+            // Colors :)
+            // Higher performance is possible with cosine lookup tables and other tricks, but inevitably introduces screen-tearing as
+            // the refresh rate outpaces the draw-rate of the monitor, even with the locked framerates I have below
+            // I think the framerate I'm getting here is good enough to demo with ^_^'
+            const auto point5_vec = _mm256_set1_ps(0.5f);
+            auto red_vec = _mm256_mul_ps(point5_vec, _mm256_cos_ps(_mm256_add_ps(tvec, u_vec)));
+            red_vec = _mm256_add_ps(red_vec, point5_vec);
 
-                    auto blue_vec = v_op(mul_ps)(point5_vec, v_op(cos_ps)(v_op(add_ps)(tvec, v_vec)));
-                    blue_vec = v_op(add_ps)(blue_vec, point5_vec);
+            auto blue_vec = _mm256_mul_ps(point5_vec, _mm256_cos_ps(_mm256_add_ps(tvec, v_vec)));
+            blue_vec = _mm256_add_ps(blue_vec, point5_vec);
 
-                    // Export
-                    for (uint32_t i = 0; i < NUM_VECTOR_LANES; i++)
-                    {
-                        colors_out->colors8bpc[i] = uint32_t(v_access(red_vec)[i] * 255.5f) | (uint32_t(v_access(blue_vec)[i] * 255.5f) << 8) |
-                            (255 << 16) | (255 << 24);
-                    }
+            // Export
+            for (uint32_t i = 0; i < NUM_VECTOR_LANES; i++)
+            {
+                colors_out->colors8bpc[i] = uint32_t(v_access(red_vec)[i] * 255.5f) | (uint32_t(v_access(blue_vec)[i] * 255.5f) << 8) |
+                    (255 << 16) | (255 << 24);
+            }
 #elif defined(TEST_ANIMATION_MONOCHROME)
-                    const auto tvec = v_op(set1_ps)(lastTime);
-                    const auto sinvec = v_op(sin_ps)(tvec);
-                    memcpy(colors_out, &sinvec, sizeof(sinvec));
+            const auto tvec = _mm256_set1_ps(thread_times[threadID]);
+            const auto sinvec = _mm256_mul_ps(_mm256_add_ps(_mm256_sin_ps(tvec), _mm256_set1_ps(1.0f)), _mm256_set1_ps(0.5f));
+            for (uint32_t i = 0; i < NUM_VECTOR_LANES; i++)
+            {
+                const uint32_t c = static_cast<uint32_t>(v_access(sinvec)[i] * 255.5f);
+                colors_out->colors8bpc[i] = c | (c << 8) | (c << 16) | (255 << 24);
+            }
 #endif
-            });
-        }
+        });
 
         if (!TranslateAccelerator(msg.hwnd, hAccelTable, &msg))
         {
@@ -238,7 +219,6 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 //  WM_DESTROY  - post a quit message and return
 //
 //
-uint64_t lastDrawTime = 0;
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
     switch (message)
@@ -262,15 +242,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         break;
     case WM_PAINT:
         {
-            uint64_t currDrawTime = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-            if ((currDrawTime - lastDrawTime) > 15) // 15 millisecond "vsync"
-            {
-                PAINTSTRUCT ps;
-                HDC hdc = BeginPaint(hWnd, &ps);
-                simple_tiling::win_paint(hdc);
-                EndPaint(hWnd, &ps);
-                lastDrawTime = currDrawTime;
-            }
+            PAINTSTRUCT ps;
+            HDC hdc = BeginPaint(hWnd, &ps);
+            simple_tiling::win_paint(hdc, 16);
+            EndPaint(hWnd, &ps);
         }
         break;
     case WM_DESTROY:
