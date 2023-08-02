@@ -10,6 +10,8 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "tiling_demo_colours", "tili
 		{5EC4B911-B553-441F-A395-3515461CC2A6} = {5EC4B911-B553-441F-A395-3515461CC2A6}
 	EndProjectSection
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "tiling_demo_raymarching", "tiling_demo_raymarching\tiling_demo_raymarching.vcxproj", "{50782DC3-D084-404F-9795-5984C588B440}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -44,6 +46,18 @@ Global
 		{AA8CD83F-2C76-4775-9C09-71BF4FEE6D40}.Tracy_Profile|x64.Build.0 = Tracy_Profile|x64
 		{AA8CD83F-2C76-4775-9C09-71BF4FEE6D40}.Tracy_Profile|x86.ActiveCfg = Tracy_Profile|Win32
 		{AA8CD83F-2C76-4775-9C09-71BF4FEE6D40}.Tracy_Profile|x86.Build.0 = Tracy_Profile|Win32
+		{50782DC3-D084-404F-9795-5984C588B440}.Debug|x64.ActiveCfg = Debug|x64
+		{50782DC3-D084-404F-9795-5984C588B440}.Debug|x64.Build.0 = Debug|x64
+		{50782DC3-D084-404F-9795-5984C588B440}.Debug|x86.ActiveCfg = Debug|Win32
+		{50782DC3-D084-404F-9795-5984C588B440}.Debug|x86.Build.0 = Debug|Win32
+		{50782DC3-D084-404F-9795-5984C588B440}.Release|x64.ActiveCfg = Release|x64
+		{50782DC3-D084-404F-9795-5984C588B440}.Release|x64.Build.0 = Release|x64
+		{50782DC3-D084-404F-9795-5984C588B440}.Release|x86.ActiveCfg = Release|Win32
+		{50782DC3-D084-404F-9795-5984C588B440}.Release|x86.Build.0 = Release|Win32
+		{50782DC3-D084-404F-9795-5984C588B440}.Tracy_Profile|x64.ActiveCfg = Debug|x64
+		{50782DC3-D084-404F-9795-5984C588B440}.Tracy_Profile|x64.Build.0 = Debug|x64
+		{50782DC3-D084-404F-9795-5984C588B440}.Tracy_Profile|x86.ActiveCfg = Debug|Win32
+		{50782DC3-D084-404F-9795-5984C588B440}.Tracy_Profile|x86.Build.0 = Debug|Win32
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
