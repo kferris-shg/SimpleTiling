@@ -21,9 +21,9 @@ BOOL                InitInstance(HINSTANCE, int);
 LRESULT CALLBACK    WndProc(HWND, UINT, WPARAM, LPARAM);
 INT_PTR CALLBACK    About(HWND, UINT, WPARAM, LPARAM);
 
-static constexpr uint32_t window_width = 1920, window_height = 1080;
+static constexpr uint32_t window_width = 640, window_height = 480;
 
-#define NUM_TILE_THREADS 8
+#define NUM_TILE_THREADS 32
 
 static float thread_times[NUM_TILE_THREADS] = {};
 
@@ -78,8 +78,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
             auto traceDistY = _mm256_set1_ps(0.0f);
             auto traceDistZ = _mm256_set1_ps(0.0f);
 
-            auto laneState = _mm256_set1_ps(INT_MAX);   
-            const auto laneLiveState = _mm256_set1_ps(0.0f);
+            auto laneState = _mm256_set1_epi32(INT_MAX);   
+            const auto laneLiveState = _mm256_set1_epi32(0);
 
             // Camera position
             // Starting at the origin for now, keeping things simple
@@ -133,12 +133,12 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
                 sphereSDF(&camPosX, &camPosY, &camPosZ, 4.0f, 0.0f, 0.0f, -10.0f, &distX, &distY, &distZ);
                 
                 // For each lane; compare manhattan distance to eps (per-axis) and overwrite existing 
-                laneState = _mm256_and_ps(laneState, _mm256_cmp_ps(distX, eps, _CMP_GT_OQ));
-                laneState = _mm256_and_ps(laneState, _mm256_cmp_ps(distY, eps, _CMP_GT_OQ));
-                laneState = _mm256_and_ps(laneState, _mm256_cmp_ps(distZ, eps, _CMP_GT_OQ));
+                laneState = _mm256_and_epi32(laneState, _mm256_castps_si256(_mm256_cmp_ps(distX, eps, _CMP_GT_OQ)));
+                laneState = _mm256_and_epi32(laneState, _mm256_castps_si256(_mm256_cmp_ps(distY, eps, _CMP_GT_OQ)));
+                laneState = _mm256_and_epi32(laneState, _mm256_castps_si256(_mm256_cmp_ps(distZ, eps, _CMP_GT_OQ)));
 
                 // Zero-out distance changes for inactive lanes
-                const auto laneMask = _mm256_div_ps(laneState, laneLiveState);
+                const auto laneMask = _mm256_castsi256_ps(_mm256_div_epi32(laneState, laneLiveState));
                 distX = _mm256_mul_ps(distX, laneMask);
                 distY = _mm256_mul_ps(distY, laneMask);
                 distZ = _mm256_mul_ps(distZ, laneMask);
@@ -154,27 +154,34 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
                 traceDistZ = _mm256_add_ps(traceDistZ, distX);
 
                 // For each lane; compare manhattan distance to eps (per-axis) and merge with existing 
-                auto skyHit = _mm256_cmp_ps(traceDistX, maxDist, _CMP_GT_OQ);
-                skyHit = _mm256_and_ps(skyHit, _mm256_cmp_ps(traceDistY, maxDist, _CMP_GT_OQ));
-                skyHit = _mm256_and_ps(skyHit, _mm256_cmp_ps(traceDistZ, maxDist, _CMP_GT_OQ));
-                laneState = _mm256_or_ps(skyHit, laneState);
+                auto skyHit = _mm256_castps_si256(_mm256_cmp_ps(traceDistX, maxDist, _CMP_GT_OQ));
+                skyHit = _mm256_and_epi32(skyHit, _mm256_castps_si256(_mm256_cmp_ps(traceDistY, maxDist, _CMP_GT_OQ)));
+                skyHit = _mm256_and_epi32(skyHit, _mm256_castps_si256(_mm256_cmp_ps(traceDistZ, maxDist, _CMP_GT_OQ)));
+                laneState = _mm256_or_epi32(skyHit, laneState);
             }
 
             // Shading
-            //////////
+            // Hex colors are in ARGB order
+            ///////////////////////////////
+
+            // Bithackery on floats...hm :p
+            // Need to do some type juggling here I think
 
             // Sky
             auto skyMask = _mm256_cmp_ps(traceDistX, maxDist, _CMP_EQ_OQ);
             skyMask = _mm256_and_ps(_mm256_cmp_ps(traceDistY, maxDist, _CMP_EQ_OQ), skyMask);
             skyMask = _mm256_and_ps(_mm256_cmp_ps(traceDistZ, maxDist, _CMP_EQ_OQ), skyMask);
             skyMask = _mm256_div_ps(skyMask, _mm256_set1_ps(INT_MAX));
-            auto skyRGB = _mm256_mul_ps(skyMask, _mm256_set1_ps(0x0000ff00)); // Blue
+            
+            auto skyMaskInteger = _mm256_castps_si256(skyMask);
+            auto skyRGB = _mm256_mul_epi32(skyMaskInteger, _mm256_set1_epi32(0x000000ff)); // Blue
             
             // Surface
-            auto surfRGB = _mm256_set1_ps(0xffff0000); // Orange (hopefully)
+            auto surfRGB = _mm256_set1_epi32(0x00ffa500); // Orange (yes I googled it)
 
             // Final color, naive non-blending color mix
-            auto rgb = _mm256_xor_ps(skyRGB, surfRGB);
+            auto rgb = _mm256_xor_epi32(skyRGB, surfRGB);
+            rgb = _mm256_or_epi32(rgb, _mm256_set1_epi32(0xff000000)); // OR in alpha here
             memcpy(colors_out, &rgb, sizeof(__m256));
         });
 
